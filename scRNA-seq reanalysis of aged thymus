@@ -1,0 +1,85 @@
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(ggrepel)
+
+
+# read 10x data # link folder w matrix file
+P3M1.data <- Read10X(data.dir = "/pathtofile/")
+P7M1.data <- Read10X(data.dir = "/pathtofile/")
+P14M1.data <- Read10X(data.dir = "/pathtofile/")
+
+# project= is what the samples are called, change as you see fit
+P3M1 <- CreateSeuratObject(counts = P3M1.data, project = "P3M", min.cells =3, min.features = 200)
+P7M1 <- CreateSeuratObject(counts = P7M1.data, project = "P7M", min.cells =3, min.features = 200)
+P14M1 <- CreateSeuratObject(counts = P14M1.data, project = "P14M", min.cells =3, min.features = 200)
+
+#Merge just the fib and entho datasets
+PWT1 <- merge(P3M1, y= P7M1, add.cell.ids = c("P3M","P7M"), project = "PWT2") 
+PWT1 <- merge(PWT1, y= P14M1, add.cell.ids = c("P3M","P14M"), project = "PWT2") 
+
+
+# QC
+# mitochondrial genes
+PWT1[["percent.mt"]] <- PercentageFeatureSet(PWT1, pattern = "^mt-")
+
+# ribosomal genes
+PWT1$percent.ribo <- PercentageFeatureSet(PWT1, pattern = "^Rps|^Rpl")
+
+Idents(PWT1) <- "orig.ident"
+VlnPlot(PWT1, features=c("nCount_RNA","percent.mt", "nFeature_RNA", "percent.ribo"))
+VlnPlot(PWT1, features=c("percent.mt", "nFeature_RNA"))
+p1 <- FeatureScatter(PWT1, feature1 = "nCount_RNA", feature2 = "percent.mt")
+p2 <- FeatureScatter(PWT1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+p1 + p2
+
+keep_cells = colnames(PWT1)[PWT1$percent.mt<=20 & 
+                              PWT1$nFeature_RNA > 500 &
+                              PWT1$nFeature_RNA < 7000 ]
+PWT1 <- subset(PWT1, cells = keep_cells)  
+
+
+# normalize and integrate data 
+PWT1 <- NormalizeData(PWT1)
+PWT1 <- FindVariableFeatures(PWT1, selection.method =  "vst", nfeatures = 3500)
+PWT1 <- ScaleData(PWT1)
+PWT1[["RNA"]] <- JoinLayers(PWT1[["RNA"]])
+
+PWT1 <- ScaleData(PWT1, verbose = FALSE)
+PWT1 <- RunPCA(PWT1, npcs = 30, verbose = FALSE)
+
+PWT1.list <- SplitObject(PWT1, split.by = "orig.ident")
+PWT1.anchors <- FindIntegrationAnchors(object.list = PWT1.list, dims = 1:20)
+PWT1 <- IntegrateData(anchorset = PWT1.anchors, dims = 1:20)
+PWT1[["RNA"]] <- JoinLayers(PWT1[["RNA"]])
+
+
+# run PCA and clusting. 
+DefaultAssay(PWT1) <- "integrated"
+
+PWT1 <- ScaleData(PWT1, verbose = FALSE)
+PWT1 <- RunPCA(PWT1, npcs = 30, verbose = FALSE)
+
+# UMAP and Clustering
+PWT1 <- RunUMAP(PWT1, reduction = "pca", dims = 1:20)
+PWT1 <- FindNeighbors(PWT1, reduction = "pca", dims = 1:20)
+PWT1 <- FindClusters(PWT1, resolution = 0.20)
+p1_PWT1 <- DimPlot(PWT1, reduction = "umap", split.by = "orig.ident")
+p2_PWT1 <- DimPlot(PWT1, reduction = "umap", label = TRUE, group.by = "seurat_clusters", repel= TRUE)
+p3_PWT1 <- DimPlot(PWT1, reduction = "umap", label = FALSE, group.by = "orig.ident", repel= TRUE)
+p1_PWT1
+p2_PWT1
+p3_PWT1
+
+
+# find markers of clusters
+DefaultAssay(PWT1) <- "integrated"
+Idents(PWT1) <- "seurat_clusters"
+markers.PWT1<- FindAllMarkers(PWT1, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25)
+
+
+# Plot gene expression
+DefaultAssay(PWT1) <- "RNA" #All gene expression done on "RNA" assay
+
+FeaturePlot(PWT1, features = c("gene"))
